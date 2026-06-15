@@ -1,3 +1,64 @@
+# MiniOB 向量数据库内核扩展实验
+
+本仓库基于 MiniOB 完成数据库系统设计实践课程中的向量数据库内核扩展任务。原 MiniOB 官方说明保留在下方，便于查看项目背景、编译运行方式和社区文档。
+
+## 已完成功能
+
+- A1：支持 `VECTOR` 向量数据类型、向量字段建表、向量插入、读取与维度校验。
+- A2：支持 `DISTANCE` 函数，包含 `EUCLIDEAN` / `L2_DISTANCE`、`COSINE` / `COSINE_DISTANCE`、`DOT` / `INNER_PRODUCT`。
+- A3：支持基于向量距离的精确 Top-K 查询，包含 `ORDER BY` 距离表达式与 `LIMIT`。
+- A4：支持 `IVF_Flat` 向量索引，包含 `CREATE VECTOR INDEX`、K-Means 聚类、`probes` 近似检索与 `VECTOR_INDEX_SCAN` 执行计划。
+- 扩展功能：支持 `DROP TABLE`，用于清理实验测试表并避免表名冲突。
+
+## 编译方式
+
+```bash
+cd /root/MiniOB/miniob
+bash build.sh debug --make -j16
+```
+
+## 启动方式
+
+```bash
+cd /root/MiniOB/miniob/build_debug
+./bin/observer -f ../etc/observer.ini -P cli
+```
+
+## 核心验证 SQL
+
+```sql
+DROP TABLE a4_report_check;
+CREATE TABLE a4_report_check(id int, embedding vector(3));
+INSERT INTO a4_report_check VALUES (1, STRING_TO_VECTOR('[1,2,3]'));
+INSERT INTO a4_report_check VALUES (2, STRING_TO_VECTOR('[1,2,4]'));
+INSERT INTO a4_report_check VALUES (3, STRING_TO_VECTOR('[10,10,10]'));
+INSERT INTO a4_report_check VALUES (4, STRING_TO_VECTOR('[2,2,3]'));
+
+CREATE VECTOR INDEX idx_a4_report_check ON a4_report_check(embedding)
+WITH (distance=L2_DISTANCE, type=ivfflat, lists=2, probes=1);
+
+EXPLAIN SELECT * FROM a4_report_check
+ORDER BY DISTANCE(embedding, STRING_TO_VECTOR('[1,2,3]'), 'L2_DISTANCE')
+LIMIT 3;
+```
+
+期望执行计划中包含：
+
+```text
+VECTOR_INDEX_SCAN(idx_a4_report_check ON a4_report_check)
+```
+
+## 本地验证结果
+
+```bash
+bash build.sh debug --make -j16
+ctest --test-dir build_debug --timeout 60 --output-on-failure -R parser_test
+```
+
+上述构建和 parser 单测均已通过。
+
+---
+
 # MiniOB 介绍
 
 <div align="left">

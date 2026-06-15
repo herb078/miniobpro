@@ -73,6 +73,40 @@ RC SelectStmt::create(Db *db, SelectSqlNode &select_sql, Stmt *&stmt)
     }
   }
 
+  vector<unique_ptr<Expression>> order_by_expressions;
+  for (unique_ptr<Expression> &expression : select_sql.order_by) {
+    if (expression->type() == ExprType::UNBOUND_FIELD) {
+      auto        unbound_field_expr = static_cast<UnboundFieldExpr *>(expression.get());
+      const char *table_name         = unbound_field_expr->table_name();
+      const char *field_name         = unbound_field_expr->field_name();
+      if (is_blank(table_name)) {
+        bool matched_alias = false;
+        for (const unique_ptr<Expression> &query_expression : bound_expressions) {
+          if (0 == strcasecmp(query_expression->name(), field_name)) {
+            order_by_expressions.emplace_back(query_expression->copy());
+            matched_alias = true;
+            break;
+          }
+        }
+        if (matched_alias) {
+          continue;
+        }
+      }
+    }
+
+    vector<unique_ptr<Expression>> bound_order_expressions;
+    RC rc = expression_binder.bind_expression(expression, bound_order_expressions);
+    if (OB_FAIL(rc)) {
+      LOG_INFO("bind order by expression failed. rc=%s", strrc(rc));
+      return rc;
+    }
+    if (bound_order_expressions.size() != 1) {
+      LOG_WARN("invalid order by expression size: %d", bound_order_expressions.size());
+      return RC::INVALID_ARGUMENT;
+    }
+    order_by_expressions.emplace_back(std::move(bound_order_expressions[0]));
+  }
+
   vector<unique_ptr<Expression>> group_by_expressions;
   for (unique_ptr<Expression> &expression : select_sql.group_by) {
     RC rc = expression_binder.bind_expression(expression, group_by_expressions);
@@ -107,6 +141,8 @@ RC SelectStmt::create(Db *db, SelectSqlNode &select_sql, Stmt *&stmt)
   select_stmt->query_expressions_.swap(bound_expressions);
   select_stmt->filter_stmt_ = filter_stmt;
   select_stmt->group_by_.swap(group_by_expressions);
+  select_stmt->order_by_.swap(order_by_expressions);
+  select_stmt->limit_ = select_sql.limit;
   stmt                      = select_stmt;
   return RC::SUCCESS;
 }

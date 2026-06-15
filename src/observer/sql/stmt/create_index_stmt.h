@@ -27,8 +27,17 @@ class FieldMeta;
 class CreateIndexStmt : public Stmt
 {
 public:
-  CreateIndexStmt(Table *table, const FieldMeta *field_meta, const string &index_name)
-      : table_(table), field_meta_(field_meta), index_name_(index_name)
+  CreateIndexStmt(Table *table, const FieldMeta *field_meta, const string &index_name,
+      bool is_vector = false, const string &index_type = "ivfflat", const string &distance_type = "L2_DISTANCE",
+      int lists = 245, int probes = 5)
+      : table_(table),
+        field_meta_(field_meta),
+        index_name_(index_name),
+        is_vector_(is_vector),
+        index_type_(index_type),
+        distance_type_(distance_type),
+        lists_(lists),
+        probes_(probes)
   {}
 
   virtual ~CreateIndexStmt() = default;
@@ -38,6 +47,11 @@ public:
   Table           *table() const { return table_; }
   const FieldMeta *field_meta() const { return field_meta_; }
   const string    &index_name() const { return index_name_; }
+  bool             is_vector() const { return is_vector_; }
+  const string    &index_type() const { return index_type_; }
+  const string    &distance_type() const { return distance_type_; }
+  int              lists() const { return lists_; }
+  int              probes() const { return probes_; }
 
 public:
   static RC create(Db *db, const CreateIndexSqlNode &create_index, Stmt *&stmt);
@@ -46,4 +60,9 @@ private:
   Table           *table_      = nullptr;
   const FieldMeta *field_meta_ = nullptr;
   string           index_name_;
+  bool             is_vector_ = false;
+  string           index_type_ = "ivfflat";
+  string           distance_type_ = "L2_DISTANCE";
+  int              lists_     = 245;
+  int              probes_    = 5;
 };

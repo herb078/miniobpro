@@ -31,8 +31,10 @@ static const Json::StaticString FIELD_PRIMARY_KEYS("primary_keys");
 TableMeta::TableMeta(const TableMeta &other)
     : table_id_(other.table_id_),
       name_(other.name_),
+      trx_fields_(other.trx_fields_),
       fields_(other.fields_),
       indexes_(other.indexes_),
+      primary_keys_(other.primary_keys_),
       storage_format_(other.storage_format_),
       storage_engine_(other.storage_engine_),
       record_size_(other.record_size_)
@@ -40,9 +42,14 @@ TableMeta::TableMeta(const TableMeta &other)
 
 void TableMeta::swap(TableMeta &other) noexcept
 {
+  std::swap(table_id_, other.table_id_);
   name_.swap(other.name_);
+  trx_fields_.swap(other.trx_fields_);
   fields_.swap(other.fields_);
   indexes_.swap(other.indexes_);
+  primary_keys_.swap(other.primary_keys_);
+  std::swap(storage_format_, other.storage_format_);
+  std::swap(storage_engine_, other.storage_engine_);
   std::swap(record_size_, other.record_size_);
 }
 

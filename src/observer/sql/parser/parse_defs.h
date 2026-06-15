@@ -96,6 +96,8 @@ struct SelectSqlNode
   vector<string>                 relations;    ///< 查询的表
   vector<ConditionSqlNode>       conditions;   ///< 查询条件，使用AND串联起来多个条件
   vector<unique_ptr<Expression>> group_by;     ///< group by clause
+  vector<unique_ptr<Expression>> order_by;     ///< order by clause
+  int                            limit = -1;   ///< limit clause
 };
 
 /**
@@ -196,6 +198,11 @@ struct CreateIndexSqlNode
   string index_name;      ///< Index name
   string relation_name;   ///< Relation name
   string attribute_name;  ///< Attribute name
+  bool   is_vector = false;
+  string index_type    = "ivfflat";
+  string distance_type = "L2_DISTANCE";
+  int    lists     = 245;
+  int    probes    = 5;
 };
 
 /**

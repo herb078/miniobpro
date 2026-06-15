@@ -47,12 +47,39 @@ RC CreateIndexStmt::create(Db *db, const CreateIndexSqlNode &create_index, Stmt 
     return RC::SCHEMA_FIELD_NOT_EXIST;
   }
 
+  if (create_index.is_vector) {
+    if (field_meta->type() != AttrType::VECTORS || create_index.lists <= 0 || create_index.probes <= 0 ||
+        0 != strcasecmp(create_index.index_type.c_str(), "ivfflat")) {
+      LOG_WARN("invalid vector index. field_type=%d, type=%s, lists=%d, probes=%d",
+          static_cast<int>(field_meta->type()),
+          create_index.index_type.c_str(),
+          create_index.lists,
+          create_index.probes);
+      return RC::INVALID_ARGUMENT;
+    }
+    if (0 != strcasecmp(create_index.distance_type.c_str(), "EUCLIDEAN") &&
+        0 != strcasecmp(create_index.distance_type.c_str(), "L2") &&
+        0 != strcasecmp(create_index.distance_type.c_str(), "L2_DISTANCE") &&
+        0 != strcasecmp(create_index.distance_type.c_str(), "COSINE") &&
+        0 != strcasecmp(create_index.distance_type.c_str(), "COSINE_DISTANCE") &&
+        0 != strcasecmp(create_index.distance_type.c_str(), "DOT") &&
+        0 != strcasecmp(create_index.distance_type.c_str(), "INNER_PRODUCT")) {
+      LOG_WARN("invalid vector distance type. distance=%s", create_index.distance_type.c_str());
+      return RC::INVALID_ARGUMENT;
+    }
+  }
+
   Index *index = table->find_index(create_index.index_name.c_str());
   if (nullptr != index) {
     LOG_WARN("index with name(%s) already exists. table name=%s", create_index.index_name.c_str(), table_name);
     return RC::SCHEMA_INDEX_NAME_REPEAT;
   }
 
-  stmt = new CreateIndexStmt(table, field_meta, create_index.index_name);
+  stmt = new CreateIndexStmt(table, field_meta, create_index.index_name,
+      create_index.is_vector,
+      create_index.index_type,
+      create_index.distance_type,
+      create_index.lists,
+      create_index.probes);
   return RC::SUCCESS;
 }

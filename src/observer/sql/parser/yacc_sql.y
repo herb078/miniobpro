@@ -87,6 +87,10 @@ size_t default_attr_length(AttrType type)
         CREATE
         DROP
         GROUP
+        ORDER
+        AS
+        LIMIT
+        WITH
         TABLE
         TABLES
         INDEX
@@ -184,6 +188,7 @@ size_t default_attr_length(AttrType type)
 %type <condition>           condition
 %type <value>               value
 %type <number>              number
+%type <number>              limit
 %type <cstring>             relation
 %type <comp>                comp_op
 %type <rel_attr>            rel_attr
@@ -197,10 +202,12 @@ size_t default_attr_length(AttrType type)
 %type <key_list>            attr_list
 %type <relation_list>       rel_list
 %type <expression>          expression
+%type <expression>          expression_with_alias
 %type <expression>          function_expression
 %type <expression>          aggregate_expression
 %type <expression_list>     expression_list
 %type <expression_list>     group_by
+%type <expression_list>     order_by
 %type <cstring>             fields_terminated_by
 %type <cstring>             enclosed_by
 %type <sql_node>            calc_stmt
@@ -333,6 +340,46 @@ create_index_stmt:    /*create index 语句的语法解析树*/
       create_index.index_name = $3;
       create_index.relation_name = $5;
       create_index.attribute_name = $7;
+    }
+    | CREATE VECTOR_T INDEX ID ON ID LBRACE ID RBRACE
+    {
+      $$ = new ParsedSqlNode(SCF_CREATE_INDEX);
+      CreateIndexSqlNode &create_index = $$->create_index;
+      create_index.index_name = $4;
+      create_index.relation_name = $6;
+      create_index.attribute_name = $8;
+      create_index.is_vector = true;
+    }
+    | CREATE VECTOR_T INDEX ID ON ID LBRACE ID RBRACE WITH LBRACE ID EQ NUMBER COMMA ID EQ NUMBER RBRACE
+    {
+      if (0 != strcasecmp($12, "lists") || 0 != strcasecmp($16, "probes") || $14 <= 0 || $18 <= 0) {
+        YYERROR;
+      }
+      $$ = new ParsedSqlNode(SCF_CREATE_INDEX);
+      CreateIndexSqlNode &create_index = $$->create_index;
+      create_index.index_name = $4;
+      create_index.relation_name = $6;
+      create_index.attribute_name = $8;
+      create_index.is_vector = true;
+      create_index.lists = $14;
+      create_index.probes = $18;
+    }
+    | CREATE VECTOR_T INDEX ID ON ID LBRACE ID RBRACE WITH LBRACE DISTANCE EQ ID COMMA ID EQ ID COMMA ID EQ NUMBER COMMA ID EQ NUMBER RBRACE
+    {
+      if (0 != strcasecmp($16, "type") || 0 != strcasecmp($18, "ivfflat") ||
+          0 != strcasecmp($20, "lists") || 0 != strcasecmp($24, "probes") || $22 <= 0 || $26 <= 0) {
+        YYERROR;
+      }
+      $$ = new ParsedSqlNode(SCF_CREATE_INDEX);
+      CreateIndexSqlNode &create_index = $$->create_index;
+      create_index.index_name = $4;
+      create_index.relation_name = $6;
+      create_index.attribute_name = $8;
+      create_index.is_vector = true;
+      create_index.distance_type = $14;
+      create_index.index_type = $18;
+      create_index.lists = $22;
+      create_index.probes = $26;
     }
     ;
 
@@ -516,7 +563,7 @@ update_stmt:      /*  update 语句的语法解析树*/
     }
     ;
 select_stmt:        /*  select 语句的语法解析树*/
-    SELECT expression_list FROM rel_list where group_by
+    SELECT expression_list FROM rel_list where group_by order_by limit
     {
       $$ = new ParsedSqlNode(SCF_SELECT);
       if ($2 != nullptr) {
@@ -538,6 +585,12 @@ select_stmt:        /*  select 语句的语法解析树*/
         $$->selection.group_by.swap(*$6);
         delete $6;
       }
+
+      if ($7 != nullptr) {
+        $$->selection.order_by.swap(*$7);
+        delete $7;
+      }
+      $$->selection.limit = $8;
     }
     ;
 calc_stmt:
@@ -550,12 +603,12 @@ calc_stmt:
     ;
 
 expression_list:
-    expression
+    expression_with_alias
     {
       $$ = new vector<unique_ptr<Expression>>;
       $$->emplace_back($1);
     }
-    | expression COMMA expression_list
+    | expression_with_alias COMMA expression_list
     {
       if ($3 != nullptr) {
         $$ = $3;
@@ -563,6 +616,17 @@ expression_list:
         $$ = new vector<unique_ptr<Expression>>;
       }
       $$->emplace($$->begin(), $1);
+    }
+    ;
+expression_with_alias:
+    expression
+    {
+      $$ = $1;
+    }
+    | expression AS ID
+    {
+      $$ = $1;
+      $$->set_name($3);
     }
     ;
 expression:
@@ -765,6 +829,26 @@ group_by:
       // group by 的表达式范围与select查询值的表达式范围是不同的，比如group by不支持 *
       // 但是这里没有处理。
       $$ = $3;
+    }
+    ;
+order_by:
+    /* empty */
+    {
+      $$ = nullptr;
+    }
+    | ORDER BY expression_list
+    {
+      $$ = $3;
+    }
+    ;
+limit:
+    /* empty */
+    {
+      $$ = -1;
+    }
+    | LIMIT NUMBER
+    {
+      $$ = $2;
     }
     ;
 load_data_stmt:

@@ -29,22 +29,106 @@ See the Mulan PSL v2 for more details. */
 #include "sql/operator/insert_logical_operator.h"
 #include "sql/operator/insert_physical_operator.h"
 #include "sql/operator/join_logical_operator.h"
+#include "sql/operator/limit_logical_operator.h"
+#include "sql/operator/limit_physical_operator.h"
 #include "sql/operator/nested_loop_join_physical_operator.h"
 #include "sql/operator/predicate_logical_operator.h"
 #include "sql/operator/predicate_physical_operator.h"
 #include "sql/operator/project_logical_operator.h"
 #include "sql/operator/project_physical_operator.h"
 #include "sql/operator/project_vec_physical_operator.h"
+#include "sql/operator/sort_logical_operator.h"
+#include "sql/operator/sort_physical_operator.h"
 #include "sql/operator/table_get_logical_operator.h"
 #include "sql/operator/table_scan_physical_operator.h"
+#include "sql/operator/vector_index_scan_physical_operator.h"
 #include "sql/operator/group_by_logical_operator.h"
 #include "sql/operator/group_by_physical_operator.h"
 #include "sql/operator/hash_group_by_physical_operator.h"
 #include "sql/operator/scalar_group_by_physical_operator.h"
 #include "sql/operator/table_scan_vec_physical_operator.h"
 #include "sql/optimizer/physical_plan_generator.h"
+#include "storage/index/ivfflat_index.h"
 
 using namespace std;
+
+static bool same_vector_distance(const char *left, const char *right)
+{
+  auto family = [](const char *name) -> int {
+    if (0 == strcasecmp(name, "EUCLIDEAN") || 0 == strcasecmp(name, "L2") ||
+        0 == strcasecmp(name, "L2_DISTANCE")) {
+      return 1;
+    }
+    if (0 == strcasecmp(name, "COSINE") || 0 == strcasecmp(name, "COSINE_DISTANCE")) {
+      return 2;
+    }
+    if (0 == strcasecmp(name, "DOT") || 0 == strcasecmp(name, "INNER_PRODUCT")) {
+      return 3;
+    }
+    return 0;
+  };
+  return family(left) != 0 && family(left) == family(right);
+}
+
+static RC try_create_vector_index_scan(SortLogicalOperator &sort_oper, LogicalOperator &child_oper,
+    unique_ptr<PhysicalOperator> &oper)
+{
+  if (child_oper.type() != LogicalOperatorType::TABLE_GET || sort_oper.expressions().empty()) {
+    return RC::UNSUPPORTED;
+  }
+
+  unique_ptr<Expression> &order_expr = sort_oper.expressions().front();
+  if (order_expr->type() != ExprType::FUNCTION) {
+    return RC::UNSUPPORTED;
+  }
+
+  FunctionExpr *distance_expr = static_cast<FunctionExpr *>(order_expr.get());
+  if (0 != strcasecmp(distance_expr->function_name(), "DISTANCE") || distance_expr->children().size() != 3) {
+    return RC::UNSUPPORTED;
+  }
+
+  Expression *field_expression = distance_expr->children()[0].get();
+  if (field_expression->type() != ExprType::FIELD) {
+    return RC::UNSUPPORTED;
+  }
+
+  Value query_value;
+  RC rc = distance_expr->children()[1]->try_get_value(query_value);
+  if (OB_FAIL(rc) || query_value.attr_type() != AttrType::VECTORS) {
+    return RC::UNSUPPORTED;
+  }
+
+  Value distance_value;
+  rc = distance_expr->children()[2]->try_get_value(distance_value);
+  if (OB_FAIL(rc) || distance_value.attr_type() != AttrType::CHARS) {
+    return RC::UNSUPPORTED;
+  }
+
+  FieldExpr               *field_expr     = static_cast<FieldExpr *>(field_expression);
+  TableGetLogicalOperator &table_get_oper = static_cast<TableGetLogicalOperator &>(child_oper);
+  Table                   *table          = table_get_oper.table();
+  Index                   *index          = table->find_index_by_field(field_expr->field().field_name());
+  if (index == nullptr || !index->is_vector_index() ||
+      !same_vector_distance(index->index_meta().distance_type(), distance_value.data())) {
+    return RC::UNSUPPORTED;
+  }
+
+  IvfflatIndex *ivfflat_index = dynamic_cast<IvfflatIndex *>(index);
+  if (ivfflat_index == nullptr) {
+    return RC::UNSUPPORTED;
+  }
+
+  const int    dimension = query_value.length() / static_cast<int>(sizeof(float));
+  const float *data      = reinterpret_cast<const float *>(query_value.data());
+  vector<float> query_vector(data, data + dimension);
+  const size_t  limit = sort_oper.limit() > 0 ? static_cast<size_t>(sort_oper.limit()) : 0;
+
+  auto vector_scan = make_unique<VectorIndexScanPhysicalOperator>(
+      table, ivfflat_index, std::move(query_vector), limit, table_get_oper.read_write_mode());
+  vector_scan->set_predicates(std::move(table_get_oper.predicates()));
+  oper = std::move(vector_scan);
+  return RC::SUCCESS;
+}
 
 RC PhysicalPlanGenerator::create(LogicalOperator &logical_operator, unique_ptr<PhysicalOperator> &oper, Session* session)
 {
@@ -85,6 +169,14 @@ RC PhysicalPlanGenerator::create(LogicalOperator &logical_operator, unique_ptr<P
 
     case LogicalOperatorType::GROUP_BY: {
       return create_plan(static_cast<GroupByLogicalOperator &>(logical_operator), oper, session);
+    } break;
+
+    case LogicalOperatorType::SORT: {
+      return create_plan(static_cast<SortLogicalOperator &>(logical_operator), oper, session);
+    } break;
+
+    case LogicalOperatorType::LIMIT: {
+      return create_plan(static_cast<LimitLogicalOperator &>(logical_operator), oper, session);
     } break;
 
     default: {
@@ -240,6 +332,53 @@ RC PhysicalPlanGenerator::create_plan(ProjectLogicalOperator &project_oper, uniq
 
   LOG_TRACE("create a project physical operator");
   return rc;
+}
+
+RC PhysicalPlanGenerator::create_plan(SortLogicalOperator &sort_oper, unique_ptr<PhysicalOperator> &oper, Session *session)
+{
+  vector<unique_ptr<LogicalOperator>> &child_opers = sort_oper.children();
+  if (child_opers.size() != 1) {
+    LOG_WARN("sort logical operator should have one child, but got %d", child_opers.size());
+    return RC::INTERNAL;
+  }
+
+  unique_ptr<PhysicalOperator> child_phy_oper;
+  RC rc = try_create_vector_index_scan(sort_oper, *child_opers.front(), child_phy_oper);
+  if (rc == RC::UNSUPPORTED) {
+    rc = create(*child_opers.front(), child_phy_oper, session);
+    if (OB_FAIL(rc)) {
+      LOG_WARN("failed to create sort child physical operator. rc=%s", strrc(rc));
+      return rc;
+    }
+  } else if (OB_FAIL(rc)) {
+    return rc;
+  }
+
+  auto sort_physical_operator = make_unique<SortPhysicalOperator>(std::move(sort_oper.expressions()));
+  sort_physical_operator->add_child(std::move(child_phy_oper));
+  oper = std::move(sort_physical_operator);
+  return RC::SUCCESS;
+}
+
+RC PhysicalPlanGenerator::create_plan(LimitLogicalOperator &limit_oper, unique_ptr<PhysicalOperator> &oper, Session *session)
+{
+  vector<unique_ptr<LogicalOperator>> &child_opers = limit_oper.children();
+  if (child_opers.size() != 1) {
+    LOG_WARN("limit logical operator should have one child, but got %d", child_opers.size());
+    return RC::INTERNAL;
+  }
+
+  unique_ptr<PhysicalOperator> child_phy_oper;
+  RC rc = create(*child_opers.front(), child_phy_oper, session);
+  if (OB_FAIL(rc)) {
+    LOG_WARN("failed to create limit child physical operator. rc=%s", strrc(rc));
+    return rc;
+  }
+
+  auto limit_physical_operator = make_unique<LimitPhysicalOperator>(limit_oper.limit());
+  limit_physical_operator->add_child(std::move(child_phy_oper));
+  oper = std::move(limit_physical_operator);
+  return RC::SUCCESS;
 }
 
 RC PhysicalPlanGenerator::create_plan(InsertLogicalOperator &insert_oper, unique_ptr<PhysicalOperator> &oper, Session* session)

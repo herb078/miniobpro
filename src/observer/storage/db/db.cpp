@@ -22,6 +22,7 @@ See the Mulan PSL v2 for more details. */
 #include "common/os/path.h"
 #include "common/global_context.h"
 #include "storage/common/meta_util.h"
+#include "storage/index/index_meta.h"
 #include "storage/table/table.h"
 #include "storage/table/table_meta.h"
 #include "storage/trx/trx.h"
@@ -173,6 +174,51 @@ RC Db::create_table(const char *table_name, span<const AttrInfoSqlNode> attribut
 
   opened_tables_[table_name] = table;
   LOG_INFO("Create table success. table name=%s, table_id:%d", table_name, table_id);
+  return RC::SUCCESS;
+}
+
+RC Db::drop_table(const char *table_name)
+{
+  if (common::is_blank(table_name)) {
+    LOG_ERROR("Failed to drop table, name cannot be empty");
+    return RC::INVALID_ARGUMENT;
+  }
+
+  auto iter = opened_tables_.find(table_name);
+  if (iter == opened_tables_.end()) {
+    LOG_WARN("No such table to drop. table name=%s", table_name);
+    return RC::SCHEMA_TABLE_NOT_EXIST;
+  }
+
+  Table         *table      = iter->second;
+  TableMeta      table_meta = table->table_meta();
+  vector<string> files;
+  files.emplace_back(table_meta_file(path_.c_str(), table_name));
+  files.emplace_back(table_data_file(path_.c_str(), table_name));
+  files.emplace_back(table_lob_file(path_.c_str(), table_name));
+
+  for (int i = 0; i < table_meta.index_num(); i++) {
+    const IndexMeta *index_meta = table_meta.index(i);
+    if (index_meta != nullptr) {
+      files.emplace_back(table_index_file(path_.c_str(), table_name, index_meta->name()));
+    }
+  }
+
+  opened_tables_.erase(iter);
+  delete table;
+
+  for (const string &file : files) {
+    error_code ec;
+    bool       removed = filesystem::remove(file, ec);
+    if (ec) {
+      LOG_ERROR("Failed to remove table file. table=%s, file=%s, error=%s",
+          table_name, file.c_str(), ec.message().c_str());
+      return RC::IOERR_WRITE;
+    }
+    LOG_INFO("Remove table file. table=%s, file=%s, removed=%d", table_name, file.c_str(), removed);
+  }
+
+  LOG_INFO("Drop table success. table name=%s", table_name);
   return RC::SUCCESS;
 }
 

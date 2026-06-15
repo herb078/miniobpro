@@ -145,6 +145,7 @@ RC ExpressionBinder::bind_unbound_field_expression(
 
   const char *table_name = unbound_field_expr->table_name();
   const char *field_name = unbound_field_expr->field_name();
+  const char *expr_name  = unbound_field_expr->name();
 
   Table *table = nullptr;
   if (is_blank(table_name)) {
@@ -173,7 +174,7 @@ RC ExpressionBinder::bind_unbound_field_expression(
 
     Field      field(table, field_meta);
     FieldExpr *field_expr = new FieldExpr(field);
-    field_expr->set_name(field_name);
+    field_expr->set_name(is_blank(expr_name) ? field_name : expr_name);
     bound_expressions.emplace_back(field_expr);
   }
 

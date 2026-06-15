@@ -32,5 +32,21 @@ RC CreateIndexExecutor::execute(SQLStageEvent *sql_event)
 
   Trx   *trx   = session->current_trx();
   Table *table = create_index_stmt->table();
+  if (create_index_stmt->is_vector()) {
+    LOG_INFO("create vector index. table=%s, index=%s, type=%s, distance=%s, lists=%d, probes=%d",
+        table->name(),
+        create_index_stmt->index_name().c_str(),
+        create_index_stmt->index_type().c_str(),
+        create_index_stmt->distance_type().c_str(),
+        create_index_stmt->lists(),
+        create_index_stmt->probes());
+    return table->create_vector_index(trx,
+        create_index_stmt->field_meta(),
+        create_index_stmt->index_name().c_str(),
+        create_index_stmt->index_type().c_str(),
+        create_index_stmt->distance_type().c_str(),
+        create_index_stmt->lists(),
+        create_index_stmt->probes());
+  }
   return table->create_index(trx, create_index_stmt->field_meta(), create_index_stmt->index_name().c_str());
 }

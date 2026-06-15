@@ -86,6 +86,10 @@ RC ExpressionBinder::bind_expression(unique_ptr<Expression> &expr, vector<unique
       return bind_arithmetic_expression(expr, bound_expressions);
     } break;
 
+    case ExprType::FUNCTION: {
+      return bind_function_expression(expr, bound_expressions);
+    } break;
+
     case ExprType::AGGREGATION: {
       ASSERT(false, "shouldn't be here");
     } break;
@@ -348,6 +352,101 @@ RC ExpressionBinder::bind_arithmetic_expression(
   unique_ptr<Expression> &right = child_bound_expressions[0];
   if (right.get() != right_expr.get()) {
     right_expr.reset(right.release());
+  }
+
+  bound_expressions.emplace_back(std::move(expr));
+  return RC::SUCCESS;
+}
+
+static RC check_function_expression(FunctionExpr &expression)
+{
+  const char                     *function_name = expression.function_name();
+  vector<unique_ptr<Expression>> &children      = expression.children();
+
+  if (0 == strcasecmp(function_name, "STRING_TO_VECTOR")) {
+    if (children.size() != 1 || children[0]->value_type() != AttrType::CHARS) {
+      LOG_WARN("invalid argument for STRING_TO_VECTOR");
+      return RC::INVALID_ARGUMENT;
+    }
+    return RC::SUCCESS;
+  }
+
+  if (0 == strcasecmp(function_name, "VECTOR_TO_STRING")) {
+    if (children.size() != 1 || children[0]->value_type() != AttrType::VECTORS) {
+      LOG_WARN("invalid argument for VECTOR_TO_STRING");
+      return RC::INVALID_ARGUMENT;
+    }
+    return RC::SUCCESS;
+  }
+
+  if (0 == strcasecmp(function_name, "DISTANCE")) {
+    if (children.size() != 3 || children[0]->value_type() != AttrType::VECTORS ||
+        children[1]->value_type() != AttrType::VECTORS || children[2]->value_type() != AttrType::CHARS) {
+      LOG_WARN("invalid argument for DISTANCE");
+      return RC::INVALID_ARGUMENT;
+    }
+
+    const int left_length  = children[0]->value_length();
+    const int right_length = children[1]->value_length();
+    if (left_length > 0 && right_length > 0 && left_length != right_length) {
+      LOG_WARN("vector dimension mismatch for DISTANCE. left_len=%d, right_len=%d", left_length, right_length);
+      return RC::INVALID_ARGUMENT;
+    }
+
+    Value method_value;
+    RC    rc = children[2]->try_get_value(method_value);
+    if (OB_SUCC(rc)) {
+      const char *method = method_value.data();
+      if (0 != strcasecmp(method, "EUCLIDEAN") && 0 != strcasecmp(method, "L2") &&
+          0 != strcasecmp(method, "L2_DISTANCE") && 0 != strcasecmp(method, "DOT") &&
+          0 != strcasecmp(method, "INNER_PRODUCT") && 0 != strcasecmp(method, "COSINE") &&
+          0 != strcasecmp(method, "COSINE_DISTANCE")) {
+        LOG_WARN("invalid distance method: %s", method);
+        return RC::INVALID_ARGUMENT;
+      }
+    }
+
+    return RC::SUCCESS;
+  }
+
+  LOG_WARN("unsupported function: %s", function_name);
+  return RC::UNSUPPORTED;
+}
+
+RC ExpressionBinder::bind_function_expression(
+    unique_ptr<Expression> &expr, vector<unique_ptr<Expression>> &bound_expressions)
+{
+  if (nullptr == expr) {
+    return RC::SUCCESS;
+  }
+
+  auto function_expr = static_cast<FunctionExpr *>(expr.get());
+
+  vector<unique_ptr<Expression>>  child_bound_expressions;
+  vector<unique_ptr<Expression>> &children = function_expr->children();
+
+  for (unique_ptr<Expression> &child_expr : children) {
+    child_bound_expressions.clear();
+
+    RC rc = bind_expression(child_expr, child_bound_expressions);
+    if (OB_FAIL(rc)) {
+      return rc;
+    }
+
+    if (child_bound_expressions.size() != 1) {
+      LOG_WARN("invalid children number of function expression: %d", child_bound_expressions.size());
+      return RC::INVALID_ARGUMENT;
+    }
+
+    unique_ptr<Expression> &child = child_bound_expressions[0];
+    if (child.get() != child_expr.get()) {
+      child_expr.reset(child.release());
+    }
+  }
+
+  RC rc = check_function_expression(*function_expr);
+  if (OB_FAIL(rc)) {
+    return rc;
   }
 
   bound_expressions.emplace_back(std::move(expr));

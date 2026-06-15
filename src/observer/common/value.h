@@ -117,8 +117,11 @@ public:
   void set_int(int val);
   void set_float(float val);
   void set_string(const char *s, int len = 0);
+  void set_vector(const float *data, int dimension);
+  RC   set_vector_from_string(const char *s);
   void set_empty_string(int len);
   void set_string_from_other(const Value &other);
+  void set_vector_from_other(const Value &other);
 
 private:
   AttrType attr_type_ = AttrType::UNDEFINED;

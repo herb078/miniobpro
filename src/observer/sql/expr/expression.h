@@ -46,6 +46,7 @@ enum class ExprType
   COMPARISON,   ///< 需要做比较的表达式
   CONJUNCTION,  ///< 多个表达式使用同一种关系(AND或OR)来联结
   ARITHMETIC,   ///< 算术运算
+  FUNCTION,
   AGGREGATION,  ///< 聚合运算
 };
 
@@ -285,6 +286,42 @@ private:
 private:
   unique_ptr<Expression> child_;      ///< 从这个表达式转换
   AttrType               cast_type_;  ///< 想要转换成这个类型
+};
+
+class FunctionExpr : public Expression
+{
+public:
+  FunctionExpr(const char *function_name, vector<unique_ptr<Expression>> &&children)
+      : function_name_(function_name), children_(std::move(children))
+  {}
+  virtual ~FunctionExpr() = default;
+
+  unique_ptr<Expression> copy() const override
+  {
+    vector<unique_ptr<Expression>> children;
+    children.reserve(children_.size());
+    for (const auto &child : children_) {
+      children.emplace_back(child->copy());
+    }
+    return make_unique<FunctionExpr>(function_name_.c_str(), std::move(children));
+  }
+
+  ExprType type() const override { return ExprType::FUNCTION; }
+  AttrType value_type() const override;
+  int      value_length() const override;
+
+  RC get_value(const Tuple &tuple, Value &value) const override;
+  RC try_get_value(Value &value) const override;
+
+  const char *function_name() const { return function_name_.c_str(); }
+  vector<unique_ptr<Expression>> &children() { return children_; }
+
+private:
+  RC calc(const vector<Value> &values, Value &result) const;
+
+private:
+  string                         function_name_;
+  vector<unique_ptr<Expression>> children_;
 };
 
 /**

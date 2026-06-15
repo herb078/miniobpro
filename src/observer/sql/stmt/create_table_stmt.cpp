@@ -19,6 +19,17 @@ See the Mulan PSL v2 for more details. */
 
 RC CreateTableStmt::create(Db *db, const CreateTableSqlNode &create_table, Stmt *&stmt)
 {
+  for (const AttrInfoSqlNode &attr_info : create_table.attr_infos) {
+    if (attr_info.type == AttrType::VECTORS) {
+      if (attr_info.length == 0 || attr_info.length % VECTOR_ELEMENT_SIZE != 0 ||
+          attr_info.length / VECTOR_ELEMENT_SIZE > VECTOR_MAX_DIMENSION) {
+        LOG_WARN("invalid vector field length. table=%s, field=%s, length=%d",
+            create_table.relation_name.c_str(), attr_info.name.c_str(), static_cast<int>(attr_info.length));
+        return RC::INVALID_ARGUMENT;
+      }
+    }
+  }
+
   StorageFormat storage_format = get_storage_format(create_table.storage_format.c_str());
   if (storage_format == StorageFormat::UNKNOWN_FORMAT) {
     return RC::INVALID_ARGUMENT;

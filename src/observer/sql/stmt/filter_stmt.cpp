@@ -127,6 +127,30 @@ RC FilterStmt::create_filter_unit(Db *db, Table *default_table, unordered_map<st
 
   filter_unit->set_comp(comp);
 
+  const AttrType left_type =
+      filter_unit->left().is_attr ? filter_unit->left().field.attr_type() : filter_unit->left().value.attr_type();
+  const AttrType right_type =
+      filter_unit->right().is_attr ? filter_unit->right().field.attr_type() : filter_unit->right().value.attr_type();
+  const int left_len =
+      filter_unit->left().is_attr ? filter_unit->left().field.meta()->len() : filter_unit->left().value.length();
+  const int right_len =
+      filter_unit->right().is_attr ? filter_unit->right().field.meta()->len() : filter_unit->right().value.length();
+
+  if (left_type == AttrType::VECTORS || right_type == AttrType::VECTORS) {
+    if (left_type != AttrType::VECTORS || right_type != AttrType::VECTORS) {
+      LOG_WARN("vector can only compare with vector");
+      return RC::UNSUPPORTED;
+    }
+    if (comp != EQUAL_TO && comp != NOT_EQUAL) {
+      LOG_WARN("vector only supports equality comparison");
+      return RC::UNSUPPORTED;
+    }
+    if (left_len != right_len) {
+      LOG_WARN("vector dimension mismatch. left_len=%d, right_len=%d", left_len, right_len);
+      return RC::INVALID_ARGUMENT;
+    }
+  }
+
   // 检查两个类型是否能够比较
   return rc;
 }

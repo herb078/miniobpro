@@ -22,6 +22,10 @@ See the Mulan PSL v2 for more details. */
 
 class Expression;
 
+constexpr int VECTOR_DEFAULT_DIMENSION = 2048;
+constexpr int VECTOR_MAX_DIMENSION     = 16383;
+constexpr int VECTOR_ELEMENT_SIZE      = sizeof(float);
+
 /**
  * @defgroup SQLParser SQL Parser
  */

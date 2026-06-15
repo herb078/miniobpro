@@ -228,6 +228,16 @@ RC Table::make_record(int value_num, const Value *values, Record &record)
   for (int i = 0; i < value_num && OB_SUCC(rc); i++) {
     const FieldMeta *field = table_meta_.field(i + normal_field_start_index);
     const Value &    value = values[i];
+    if (field->type() == AttrType::VECTORS) {
+      if (value.attr_type() != AttrType::VECTORS || value.length() != field->len()) {
+        LOG_WARN("invalid vector value. table=%s, field=%s, field_len=%d, value_len=%d",
+            table_meta_.name(), field->name(), field->len(), value.length());
+        rc = RC::INVALID_ARGUMENT;
+        break;
+      }
+      rc = set_value_to_record(record_data, value, field);
+      continue;
+    }
     if (field->type() != value.attr_type()) {
       Value real_value;
       rc = Value::cast_to(value, field->type(), real_value);

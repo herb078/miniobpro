@@ -50,6 +50,25 @@ UnboundAggregateExpr *create_aggregate_expression(const char *aggregate_name,
   return expr;
 }
 
+size_t attr_length(AttrType type, int length)
+{
+  if (type == AttrType::VECTORS) {
+    if (length <= 0 || length > VECTOR_MAX_DIMENSION) {
+      return 0;
+    }
+    return static_cast<size_t>(length) * VECTOR_ELEMENT_SIZE;
+  }
+  return static_cast<size_t>(length);
+}
+
+size_t default_attr_length(AttrType type)
+{
+  if (type == AttrType::VECTORS) {
+    return static_cast<size_t>(VECTOR_DEFAULT_DIMENSION) * VECTOR_ELEMENT_SIZE;
+  }
+  return 4;
+}
+
 %}
 
 %define api.pure full
@@ -89,6 +108,9 @@ UnboundAggregateExpr *create_aggregate_expression(const char *aggregate_name,
         STRING_T
         FLOAT_T
         VECTOR_T
+        STRING_TO_VECTOR
+        VECTOR_TO_STRING
+        DISTANCE
         HELP
         EXIT
         DOT //QUOTE
@@ -175,6 +197,7 @@ UnboundAggregateExpr *create_aggregate_expression(const char *aggregate_name,
 %type <key_list>            attr_list
 %type <relation_list>       rel_list
 %type <expression>          expression
+%type <expression>          function_expression
 %type <expression>          aggregate_expression
 %type <expression_list>     expression_list
 %type <expression_list>     group_by
@@ -363,14 +386,14 @@ attr_def:
       $$ = new AttrInfoSqlNode;
       $$->type = (AttrType)$2;
       $$->name = $1;
-      $$->length = $4;
+      $$->length = attr_length((AttrType)$2, $4);
     }
     | ID type
     {
       $$ = new AttrInfoSqlNode;
       $$->type = (AttrType)$2;
       $$->name = $1;
-      $$->length = 4;
+      $$->length = default_attr_length((AttrType)$2);
     }
     ;
 number:
@@ -445,6 +468,16 @@ value:
       char *tmp = common::substr($1,1,strlen($1)-2);
       $$ = new Value(tmp);
       free(tmp);
+    }
+    |STRING_TO_VECTOR LBRACE SSS RBRACE {
+      char *tmp = common::substr($3,1,strlen($3)-2);
+      $$ = new Value;
+      RC rc = $$->set_vector_from_string(tmp);
+      free(tmp);
+      if (rc != RC::SUCCESS) {
+        delete $$;
+        YYERROR;
+      }
     }
     ;
 storage_format:
@@ -568,6 +601,32 @@ expression:
     }
     | aggregate_expression {
       $$ = $1;
+    }
+    | function_expression {
+      $$ = $1;
+    }
+    ;
+
+function_expression:
+    STRING_TO_VECTOR LBRACE expression RBRACE {
+      vector<unique_ptr<Expression>> args;
+      args.emplace_back($3);
+      $$ = new FunctionExpr("STRING_TO_VECTOR", std::move(args));
+      $$->set_name(token_name(sql_string, &@$));
+    }
+    | VECTOR_TO_STRING LBRACE expression RBRACE {
+      vector<unique_ptr<Expression>> args;
+      args.emplace_back($3);
+      $$ = new FunctionExpr("VECTOR_TO_STRING", std::move(args));
+      $$->set_name(token_name(sql_string, &@$));
+    }
+    | DISTANCE LBRACE expression COMMA expression COMMA expression RBRACE {
+      vector<unique_ptr<Expression>> args;
+      args.emplace_back($3);
+      args.emplace_back($5);
+      args.emplace_back($7);
+      $$ = new FunctionExpr("DISTANCE", std::move(args));
+      $$->set_name(token_name(sql_string, &@$));
     }
     ;
 

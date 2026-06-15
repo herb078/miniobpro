@@ -16,6 +16,9 @@ See the Mulan PSL v2 for more details. */
 #include "sql/expr/tuple.h"
 #include "sql/expr/arithmetic_operator.hpp"
 
+#include <cmath>
+#include <strings.h>
+
 using namespace std;
 
 RC FieldExpr::get_value(const Tuple &tuple, Value &value) const
@@ -132,6 +135,138 @@ RC CastExpr::try_get_value(Value &result) const
 
 ////////////////////////////////////////////////////////////////////////////////
 
+AttrType FunctionExpr::value_type() const
+{
+  if (0 == strcasecmp(function_name_.c_str(), "STRING_TO_VECTOR")) {
+    return AttrType::VECTORS;
+  }
+  if (0 == strcasecmp(function_name_.c_str(), "VECTOR_TO_STRING")) {
+    return AttrType::CHARS;
+  }
+  if (0 == strcasecmp(function_name_.c_str(), "DISTANCE")) {
+    return AttrType::FLOATS;
+  }
+  return AttrType::UNDEFINED;
+}
+
+int FunctionExpr::value_length() const
+{
+  if (0 == strcasecmp(function_name_.c_str(), "DISTANCE")) {
+    return sizeof(float);
+  }
+  if (0 == strcasecmp(function_name_.c_str(), "STRING_TO_VECTOR") && children_.size() == 1) {
+    Value value;
+    if (children_[0]->try_get_value(value) == RC::SUCCESS && value.attr_type() == AttrType::CHARS) {
+      Value vector_value;
+      if (vector_value.set_vector_from_string(value.data()) == RC::SUCCESS) {
+        return vector_value.length();
+      }
+    }
+  }
+  return -1;
+}
+
+RC FunctionExpr::get_value(const Tuple &tuple, Value &value) const
+{
+  vector<Value> values;
+  values.reserve(children_.size());
+  for (const auto &child : children_) {
+    Value child_value;
+    RC rc = child->get_value(tuple, child_value);
+    if (OB_FAIL(rc)) {
+      return rc;
+    }
+    values.emplace_back(std::move(child_value));
+  }
+  return calc(values, value);
+}
+
+RC FunctionExpr::try_get_value(Value &value) const
+{
+  vector<Value> values;
+  values.reserve(children_.size());
+  for (const auto &child : children_) {
+    Value child_value;
+    RC rc = child->try_get_value(child_value);
+    if (OB_FAIL(rc)) {
+      return rc;
+    }
+    values.emplace_back(std::move(child_value));
+  }
+  return calc(values, value);
+}
+
+RC FunctionExpr::calc(const vector<Value> &values, Value &result) const
+{
+  if (0 == strcasecmp(function_name_.c_str(), "STRING_TO_VECTOR")) {
+    if (values.size() != 1 || values[0].attr_type() != AttrType::CHARS) {
+      return RC::INVALID_ARGUMENT;
+    }
+    return result.set_vector_from_string(values[0].data());
+  }
+
+  if (0 == strcasecmp(function_name_.c_str(), "VECTOR_TO_STRING")) {
+    if (values.size() != 1 || values[0].attr_type() != AttrType::VECTORS) {
+      return RC::INVALID_ARGUMENT;
+    }
+    result.set_string(values[0].to_string().c_str());
+    return RC::SUCCESS;
+  }
+
+  if (0 == strcasecmp(function_name_.c_str(), "DISTANCE")) {
+    if (values.size() != 3 || values[0].attr_type() != AttrType::VECTORS ||
+        values[1].attr_type() != AttrType::VECTORS || values[2].attr_type() != AttrType::CHARS) {
+      return RC::INVALID_ARGUMENT;
+    }
+    if (values[0].length() != values[1].length()) {
+      return RC::INVALID_ARGUMENT;
+    }
+
+    const int    dimension = values[0].length() / static_cast<int>(sizeof(float));
+    const float *left      = reinterpret_cast<const float *>(values[0].data());
+    const float *right     = reinterpret_cast<const float *>(values[1].data());
+    const string method    = values[2].data();
+
+    float distance = 0.0F;
+    if (0 == strcasecmp(method.c_str(), "EUCLIDEAN") || 0 == strcasecmp(method.c_str(), "L2") ||
+        0 == strcasecmp(method.c_str(), "L2_DISTANCE")) {
+      float sum = 0.0F;
+      for (int i = 0; i < dimension; i++) {
+        const float diff = left[i] - right[i];
+        sum += diff * diff;
+      }
+      distance = sqrtf(sum);
+    } else if (0 == strcasecmp(method.c_str(), "DOT") || 0 == strcasecmp(method.c_str(), "INNER_PRODUCT")) {
+      for (int i = 0; i < dimension; i++) {
+        distance += left[i] * right[i];
+      }
+    } else if (0 == strcasecmp(method.c_str(), "COSINE") || 0 == strcasecmp(method.c_str(), "COSINE_DISTANCE")) {
+      float dot = 0.0F;
+      float left_norm = 0.0F;
+      float right_norm = 0.0F;
+      for (int i = 0; i < dimension; i++) {
+        dot += left[i] * right[i];
+        left_norm += left[i] * left[i];
+        right_norm += right[i] * right[i];
+      }
+      if (left_norm <= 0.0F || right_norm <= 0.0F) {
+        distance = left_norm <= 0.0F && right_norm <= 0.0F ? 0.0F : 1.0F;
+      } else {
+        distance = 1.0F - dot / (sqrtf(left_norm) * sqrtf(right_norm));
+      }
+    } else {
+      return RC::INVALID_ARGUMENT;
+    }
+
+    result.set_float(distance);
+    return RC::SUCCESS;
+  }
+
+  return RC::UNSUPPORTED;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
 ComparisonExpr::ComparisonExpr(CompOp comp, unique_ptr<Expression> left, unique_ptr<Expression> right)
     : comp_(comp), left_(std::move(left)), right_(std::move(right))
 {
@@ -142,6 +277,21 @@ ComparisonExpr::~ComparisonExpr() {}
 RC ComparisonExpr::compare_value(const Value &left, const Value &right, bool &result) const
 {
   RC  rc         = RC::SUCCESS;
+  if (left.attr_type() == AttrType::VECTORS || right.attr_type() == AttrType::VECTORS) {
+    if (left.attr_type() != AttrType::VECTORS || right.attr_type() != AttrType::VECTORS) {
+      LOG_WARN("vector can only compare with vector");
+      return RC::UNSUPPORTED;
+    }
+    if (comp_ != EQUAL_TO && comp_ != NOT_EQUAL) {
+      LOG_WARN("vector only supports equality comparison");
+      return RC::UNSUPPORTED;
+    }
+    if (left.length() != right.length()) {
+      LOG_WARN("vector dimension mismatch. left_len=%d, right_len=%d", left.length(), right.length());
+      return RC::INVALID_ARGUMENT;
+    }
+  }
+
   int cmp_result = left.compare(right);
   result         = false;
   switch (comp_) {
@@ -242,7 +392,7 @@ RC ComparisonExpr::eval(Chunk &chunk, vector<uint8_t> &select)
     rc = compare_column<int>(left_column, right_column, select);
   } else if (left_column.attr_type() == AttrType::FLOATS) {
     rc = compare_column<float>(left_column, right_column, select);
-  } else if (left_column.attr_type() == AttrType::CHARS) {
+  } else if (left_column.attr_type() == AttrType::CHARS || left_column.attr_type() == AttrType::VECTORS) {
     int rows = 0;
     if (left_column.column_type() == Column::Type::CONSTANT_COLUMN) {
       rows = right_column.count();

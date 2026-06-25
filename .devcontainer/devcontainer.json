@@ -1,3 +1,29 @@
 {
-  "image": "oceanbase/miniob"
+    "name": "MiniOB Development",
+    "image": "oceanbase/miniob",
+    "workspaceFolder": "/root/miniob",
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-vscode.cpptools",
+                "ms-vscode.cmake-tools",
+                "ms-vscode.cpptools-extension-pack",
+                "twxs.cmake",
+                "vadimcn.vscode-lldb"
+            ],
+            "settings": {
+                "cmake.sourceDirectory": "/root/miniob",
+                "cmake.buildDirectory": "/root/miniob/build",
+                "cmake.generator": "Unix Makefiles",
+                "cmake.configureOnOpen": false,
+                "editor.formatOnSave": true,
+                "files.eol": "\n"
+            }
+        }
+    },
+    "remoteUser": "root",
+    "postCreateCommand": "if [ -f /root/miniob/build.sh ]; then sed -i 's/\\r$//' /root/miniob/build.sh && echo 'Line endings fixed!'; fi",
+    "remoteEnv": {
+        "LD_LIBRARY_PATH": "/usr/local/lib64:${containerEnv:LD_LIBRARY_PATH}"
+    }
 }
